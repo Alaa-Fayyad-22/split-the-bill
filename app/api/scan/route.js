@@ -28,15 +28,37 @@ const SCHEMA = {
   required: ["items"],
 };
 
+// const PROMPT = `You are reading a restaurant receipt (likely from Lebanon).
+// Extract EVERY ordered line item, in order, exactly as printed.
+// For each item return:
+// - name: the item name as printed
+// - quantity: the count at the START of the line (use 1 if there is none)
+// - price: the LINE TOTAL shown on the right, as a plain number ONLY — strip any
+//   currency symbol, thousands separators, and trailing letters.
+//   Example: "623,000T" becomes 623000. "2,002,500T" becomes 2002500.
+// Also return "total" (the grand total in local currency if shown) and "currency".
+// Ignore the header, table number, date, VAT line, server name, and thank-you text.
+// Only return the real ordered items.`;
+
 const PROMPT = `You are reading a restaurant receipt (likely from Lebanon).
 Extract EVERY ordered line item, in order, exactly as printed.
+
 For each item return:
 - name: the item name as printed
 - quantity: the count at the START of the line (use 1 if there is none)
-- price: the LINE TOTAL shown on the right, as a plain number ONLY — strip any
-  currency symbol, thousands separators, and trailing letters.
-  Example: "623,000T" becomes 623000. "2,002,500T" becomes 2002500.
-Also return "total" (the grand total in local currency if shown) and "currency".
+- price: the LINE TOTAL on the right, as a plain number ONLY — strip any currency
+  symbol, thousands separators, and trailing letters.
+  Example: "623,000T" -> 623000    "2,002,500T" -> 2002500
+
+Read every digit carefully. Do NOT drop, add, or round any digit. A price with a
+missing or extra zero is a serious error. Preserve the exact number of digits printed.
+
+VERIFY BEFORE ANSWERING: the receipt prints a grand TOTAL. Add up all the line-item
+prices you extracted and compare that sum to the printed total. If they do not match,
+re-examine the prices — a mismatch is almost always one misread digit, usually a
+missing or extra zero — and fix them until the sum equals the printed total.
+
+Also return "total" (the printed grand total as a plain number) and "currency".
 Ignore the header, table number, date, VAT line, server name, and thank-you text.
 Only return the real ordered items.`;
 

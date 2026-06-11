@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Fattoura ",
+  title: "Fattoura",
   description: "Splitting the bill, the easy way.",
 };
 

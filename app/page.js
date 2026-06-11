@@ -4,20 +4,16 @@ import React, { useState, useMemo, useRef } from "react";
 import { Plus, Trash2, Users, Receipt, ArrowRight, Scissors, Camera } from "lucide-react";
 
 /*
-  Split the Bill — v1 (with photo OCR)
+  Fattoura — split the bill
   --------------------------------------------------------------
-  Tap "Scan receipt", pick a photo, and the items fill in automatically
-  (read by Gemini on the server in /api/scan). Then assign each item to
-  the people who shared it — the price splits equally among them.
+  Scan a receipt, assign each item to whoever shared it (price splits
+  equally among them), then enter how much each person paid (in LL or $).
+  The app converts everything to one currency and works out who pays whom.
 
-  Quantities: a line with quantity > 1 is really N separate things.
-  Use "Split into units" to break it into N rows, then assign each one.
-
-  Prices on Lebanese receipts already INCLUDE the 11% VAT, so each price
-  is the final price — there's no separate tax step.
+  Tip is split EQUALLY among everyone in the list.
+  Lebanese receipt prices already INCLUDE the 11% VAT, so each price is final.
 */
 
-// --- design tokens -------------------------------------------------------
 const C = {
   bg: "#20251b", paper: "#f7f4ec", ink: "#23241f", inkSoft: "#7a7c70",
   line: "#e6e1d4", accent: "#d8552e", accentSoft: "#fbe9e0", good: "#3f7d56", warn: "#b5402a",
@@ -27,17 +23,12 @@ const mono = { fontFamily: "ui-monospace, Menlo, monospace", fontVariantNumeric:
 const fmtLBP = (n) => Math.round(n).toLocaleString("en-US");
 const fmtUSD = (n, rate) => (n / rate).toFixed(2);
 
-// --- seed data (replaced as soon as you scan a receipt) ------------------
-const SEED_PEOPLE = ["Person 1", "Person 2", "Person 3", "Person 4", "Person 5", "Person 6"].map(
+const SEED_PEOPLE = [].map(
   (name, i) => ({ id: "p" + i, name, color: PERSON_COLORS[i % PERSON_COLORS.length] })
 );
-const SEED_ITEMS = [
-  
-].map(([name, price, qty], i) => ({ id: "i" + i, name, price, qty, sharers: [] }));
+const SEED_ITEMS = [].map(([name, price, qty], i) => ({ id: "i" + i, name, price, qty, sharers: [] }));
 
-// Shrink the photo in the browser before upload: faster, and stays under
-// the host's request-size limit. Receipts don't need full resolution.
-function fileToResizedBase64(file, maxDim = 1600, quality = 0.82) {
+function fileToResizedBase64(file, maxDim = 2000, quality = 0.9) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
@@ -63,7 +54,7 @@ function fileToResizedBase64(file, maxDim = 1600, quality = 0.82) {
 export default function SplitTheBill() {
   const [people, setPeople] = useState(SEED_PEOPLE);
   const [items, setItems] = useState(SEED_ITEMS);
-  const [payerId, setPayerId] = useState("p0");
+  const [paidById, setPaidById] = useState({}); // personId -> { amount, ccy: "LL" | "USD" }
   const [tip, setTip] = useState(0);
   const [rate, setRate] = useState(89000);
   const [scanning, setScanning] = useState(false);
@@ -98,7 +89,7 @@ export default function SplitTheBill() {
       setScanError(err.message || "Could not read the receipt.");
     } finally {
       setScanning(false);
-      e.target.value = ""; // let the same file be picked again
+      e.target.value = "";
     }
   };
 
@@ -111,8 +102,12 @@ export default function SplitTheBill() {
   const removePerson = (id) => {
     setPeople(people.filter((p) => p.id !== id));
     setItems(items.map((it) => ({ ...it, sharers: it.sharers.filter((s) => s !== id) })));
-    if (payerId === id) setPayerId("");
+    const next = { ...paidById }; delete next[id]; setPaidById(next);
   };
+  const setPaidAmount = (id, amount) =>
+    setPaidById({ ...paidById, [id]: { ...(paidById[id] || { ccy: "LL" }), amount } });
+  const setPaidCcy = (id, ccy) =>
+    setPaidById({ ...paidById, [id]: { ...(paidById[id] || { amount: 0 }), ccy } });
 
   // --- items ---
   const setItem = (id, patch) => setItems(items.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -136,7 +131,7 @@ export default function SplitTheBill() {
       }));
     }));
 
-  // --- math: every row splits equally among its sharers ---
+  // --- what each person OWES (their share of items + an EQUAL slice of tip) ---
   const summary = useMemo(() => {
     const subtotal = Object.fromEntries(people.map((p) => [p.id, 0]));
     let unassigned = 0, grand = 0;
@@ -146,31 +141,56 @@ export default function SplitTheBill() {
       const share = it.price / it.sharers.length;
       for (const s of it.sharers) if (s in subtotal) subtotal[s] += share;
     }
-    const baseAssigned = Object.values(subtotal).reduce((a, b) => a + b, 0);
-    const totals = Object.fromEntries(people.map((p) => {
-      const tipShare = baseAssigned > 0 ? (subtotal[p.id] / baseAssigned) * tip : 0;
-      return [p.id, subtotal[p.id] + tipShare];
-    }));
-    return { subtotal, totals, unassigned, grand };
+    const tipPerPerson = people.length > 0 ? tip / people.length : 0;
+    const totals = Object.fromEntries(
+      people.map((p) => [p.id, subtotal[p.id] + tipPerPerson])
+    );
+    return { totals, unassigned, grand };
   }, [people, items, tip]);
 
-  const payer = people.find((p) => p.id === payerId);
   const grandWithTip = summary.grand + Number(tip || 0);
+
+  // --- balances + settlement (paid converted to LL via rate) ---
+  const settlement = useMemo(() => {
+    const rows = people.map((p) => {
+      const owed = summary.totals[p.id] || 0;
+      const entry = paidById[p.id] || {};
+      const amt = Number(entry.amount) || 0;
+      const paid = entry.ccy === "USD" ? amt * rate : amt; // everything in LL
+      return { id: p.id, name: p.name, color: p.color, owed, paid, net: paid - owed };
+    });
+    const totalPaid = rows.reduce((a, r) => a + r.paid, 0);
+
+    const debtors = rows.filter((r) => r.net < -0.5).map((r) => ({ ...r, amt: -r.net })).sort((a, b) => b.amt - a.amt);
+    const creditors = rows.filter((r) => r.net > 0.5).map((r) => ({ ...r, amt: r.net })).sort((a, b) => b.amt - a.amt);
+    const transfers = [];
+    let i = 0, j = 0;
+    while (i < debtors.length && j < creditors.length) {
+      const amount = Math.min(debtors[i].amt, creditors[j].amt);
+      transfers.push({ from: debtors[i], to: creditors[j], amount });
+      debtors[i].amt -= amount; creditors[j].amt -= amount;
+      if (debtors[i].amt < 0.5) i++;
+      if (creditors[j].amt < 0.5) j++;
+    }
+    return { rows, totalPaid, transfers };
+  }, [people, summary, paidById, rate]);
+
+  const paidGap = grandWithTip - settlement.totalPaid;
+  const paidEnough = settlement.totalPaid + 0.5 >= grandWithTip; // green when equal or greater
 
   return (
     <div style={{ background: C.bg, minHeight: "100%", padding: "20px 12px", fontFamily: "system-ui, sans-serif" }}>
       <div style={{ maxWidth: 460, margin: "0 auto" }}>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10, color: C.paper, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, color: C.paper, marginBottom: 4 }}>
           <Receipt size={22} />
-          <div style={{ fontWeight: 700, fontSize: 18, letterSpacing: 0.3 }}>Split the Bill</div>
+          <div style={{ fontWeight: 700, fontSize: 18, letterSpacing: 0.3 }}>Fattoura</div>
         </div>
+        <div style={{ color: C.paper, opacity: 0.6, fontSize: 12, marginBottom: 14, paddingLeft: 32 }}>Splitting, the easy way</div>
 
         {/* scan */}
         <input ref={fileRef} type="file" accept="image/*" onChange={onPickFile} style={{ display: "none" }} />
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={scanning}
+        <button onClick={() => fileRef.current?.click()} disabled={scanning}
           style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
             background: C.accent, color: "#fff", border: "none", borderRadius: 12, padding: "13px",
             fontSize: 15, fontWeight: 700, cursor: scanning ? "default" : "pointer", opacity: scanning ? 0.7 : 1, marginBottom: 12 }}>
@@ -250,14 +270,8 @@ export default function SplitTheBill() {
           </button>
         </Panel>
 
-        {/* settings */}
+        {/* tip + rate */}
         <Panel>
-          <Row label="Who paid the bill?">
-            <select value={payerId} onChange={(e) => setPayerId(e.target.value)} style={select}>
-              <option value="">— select —</option>
-              {people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </Row>
           <Row label="Tip / service (LL)">
             <input type="number" value={tip} onChange={(e) => setTip(Number(e.target.value))} style={{ ...numInput, ...mono }} />
           </Row>
@@ -266,36 +280,109 @@ export default function SplitTheBill() {
           </Row>
         </Panel>
 
-        {/* results */}
-        <Panel accent>
-          <Label>What each person owes</Label>
-          <div style={{ marginTop: 8 }}>
+        {/* who paid (and how much) — border turns green once the bill is covered */}
+        <Panel glow={paidEnough ? C.good : C.warn}>
+          <Label>Who paid, and how much?</Label>
+          <div style={{ marginTop: 6 }}>
             {people.map((p) => {
-              const amt = summary.totals[p.id] || 0;
-              const isPayer = p.id === payerId;
+              const entry = paidById[p.id] || {};
+              const ccy = entry.ccy || "LL";
               return (
-                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: `1px solid ${C.line}` }}>
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: p.color }} />
-                  <span style={{ fontSize: 14, color: C.ink, fontWeight: 600 }}>{p.name}</span>
-                  {!isPayer && payer && amt > 0 && (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, color: C.inkSoft }}>
-                      <ArrowRight size={11} /> {payer.name}
-                    </span>
-                  )}
-                  {isPayer && <span style={{ fontSize: 11, color: C.good, fontWeight: 600 }}>paid</span>}
+                <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.ink }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 999, background: p.color }} />
+                    {p.name}
+                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="number" placeholder="0" value={entry.amount ?? ""}
+                      onChange={(e) => setPaidAmount(p.id, Number(e.target.value))}
+                      style={{ ...numInput, width: 96, ...mono }} />
+                    <button onClick={() => setPaidCcy(p.id, ccy === "USD" ? "LL" : "USD")}
+                      style={{ border: `1px solid ${C.line}`, background: "#fff", borderRadius: 8, padding: "5px 0", width: 42, fontSize: 12, fontWeight: 700, color: C.ink, cursor: "pointer" }}>
+                      {ccy === "USD" ? "$" : "LL"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.line}`, fontSize: 12, color: C.inkSoft }}>
+            <span>Paid so far</span>
+            <span style={{ textAlign: "right" }}>
+              <span style={{ ...mono, display: "block", color: C.ink }}>{fmtLBP(settlement.totalPaid)} / {fmtLBP(grandWithTip)} LL</span>
+              <span style={mono}>${fmtUSD(settlement.totalPaid, rate)} / ${fmtUSD(grandWithTip, rate)}</span>
+            </span>
+          </div>
+          {Math.abs(paidGap) > 0.5 && (
+            <div style={{ fontSize: 12, color: C.warn, marginTop: 4 }}>
+              {paidGap > 0
+                ? `${fmtLBP(paidGap)} LL of the bill isn't covered yet.`
+                : `Paid is ${fmtLBP(-paidGap)} LL more than the bill.`}
+              <br />
+
+              {paidGap > 0
+                ? `${fmtUSD(paidGap, rate)} $ of the bill isn't covered yet.`
+                : `Paid is ${fmtUSD(-paidGap, rate)} $ more than the bill.`}
+            </div>
+            
+          )}
+        </Panel>
+
+        {/* settle up */}
+        <Panel>
+          <Label>Settle up</Label>
+          <div style={{ marginTop: 8 }}>
+            {settlement.rows.map((r) => {
+              const settled = Math.abs(r.net) < 0.5;
+              return (
+                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: `1px solid ${C.line}` }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: r.color }} />
+                  <span style={{ fontSize: 14, color: C.ink, fontWeight: 600 }}>{r.name}</span>
+                  <span style={{ ...mono, fontSize: 10, color: C.inkSoft }}>paid {fmtLBP(r.paid)} · owed {fmtLBP(r.owed)}</span>
                   <span style={{ marginLeft: "auto", textAlign: "right" }}>
-                    <span style={{ ...mono, fontSize: 14, fontWeight: 700, color: C.ink }}>{fmtLBP(amt)} LL</span>
-                    <span style={{ ...mono, fontSize: 11, color: C.inkSoft, display: "block" }}>${fmtUSD(amt, rate)}</span>
+                    {settled
+                      ? <span style={{ fontSize: 12, color: C.inkSoft, fontWeight: 600 }}>settled</span>
+                      : (
+                        <>
+                          <span style={{ ...mono, fontSize: 14, fontWeight: 700, color: r.net > 0 ? C.good : C.accent }}>
+                            {fmtLBP(Math.abs(r.net))} LL
+                          </span>
+                          <span style={{ fontSize: 10, color: C.inkSoft, display: "block" }}>{r.net > 0 ? "gets back" : "owes"}</span>
+                        </>
+                      )}
                   </span>
                 </div>
               );
             })}
           </div>
+
+          {settlement.transfers.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <Label>Who pays whom</Label>
+              <div style={{ marginTop: 4 }}>
+                {settlement.transfers.map((t, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 0", borderBottom: `1px solid ${C.line}` }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: t.from.color }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{t.from.name}</span>
+                    <ArrowRight size={13} color={C.inkSoft} />
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: t.to.color }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{t.to.name}</span>
+                    <span style={{ marginLeft: "auto", textAlign: "right" }}>
+                      <span style={{ ...mono, fontSize: 13, fontWeight: 700, color: C.accent }}>{fmtLBP(t.amount)} LL</span>
+                      <span style={{ ...mono, fontSize: 10, color: C.inkSoft, display: "block" }}>${fmtUSD(t.amount, rate)}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {summary.unassigned > 0 && (
             <div style={{ marginTop: 10, fontSize: 12, color: C.warn }}>
               <span style={mono}>{fmtLBP(summary.unassigned)} LL</span> still unassigned — tap people on those items.
             </div>
           )}
+
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14, paddingTop: 12, borderTop: `2px solid ${C.ink}` }}>
             <span style={{ fontSize: 13, color: C.inkSoft }}>Grand total {tip > 0 ? "(incl. tip)" : ""}</span>
             <span style={{ textAlign: "right" }}>
@@ -311,9 +398,10 @@ export default function SplitTheBill() {
   );
 }
 
-function Panel({ children, accent }) {
+function Panel({ children, accent, glow }) {
+  const ring = glow ? `0 0 0 2px ${glow}` : accent ? `0 0 0 2px ${C.accent}` : "0 1px 0 rgba(0,0,0,0.04)";
   return (
-    <div style={{ background: C.paper, borderRadius: 14, padding: 16, marginBottom: 12, boxShadow: accent ? `0 0 0 2px ${C.accent}` : "0 1px 0 rgba(0,0,0,0.04)" }}>
+    <div style={{ background: C.paper, borderRadius: 14, padding: 16, marginBottom: 12, boxShadow: ring }}>
       {children}
     </div>
   );
@@ -335,5 +423,4 @@ function Row({ label, children }) {
 }
 const pill = { display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${C.line}`, borderRadius: 999, padding: "5px 11px", fontSize: 13, background: "#fff", cursor: "pointer" };
 const iconBtn = { border: "none", background: "transparent", cursor: "pointer", padding: 3, display: "flex" };
-const select = { border: `1px solid ${C.line}`, borderRadius: 8, padding: "5px 8px", fontSize: 13, background: "#fff", color: C.ink };
-const numInput = { width: 110, textAlign: "right", border: `1px solid ${C.line}`, borderRadius: 8, padding: "5px 8px", fontSize: 13, color: C.ink };
+const numInput = { width: 120, textAlign: "right", border: `1px solid ${C.line}`, borderRadius: 8, padding: "5px 8px", fontSize: 13, color: C.ink };

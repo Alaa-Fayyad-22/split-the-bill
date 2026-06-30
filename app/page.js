@@ -845,7 +845,7 @@ export default function SplitTheBill() {
 }
 
 function Panel({ children, accent, glow }) {
-  const ring = glow ? `0 0 0 2px ${glow}` : accent ? `0 0 0 2px ${C.accent}` : "0 1px 0 rgba(0,0,0,0.04)";
+  const ring = glow ? `0 0 0 6px ${glow}` : accent ? `0 0 0 2px ${C.accent}` : "0 1px 0 rgba(0,0,0,0.04)";
   return (
     <div style={{ background: C.paper, borderRadius: 14, padding: 16, marginBottom: 12, boxShadow: ring }}>
       {children}

@@ -531,7 +531,7 @@ export default function SplitTheBill() {
   // --- people ---
   const addPerson = () => {
     const i = people.length;
-    setPeople([...people, { id: "p" + Date.now(), name: "Person " + (i + 1), color: PERSON_COLORS[i % PERSON_COLORS.length] }]);
+    setPeople([...people, { id: "p" + Date.now(), name: "", color: PERSON_COLORS[i % PERSON_COLORS.length] }]);
   };
   const renamePerson = (id, name) => setPeople(people.map((p) => (p.id === id ? { ...p, name } : p)));
   const removePerson = (id) => {

@@ -454,7 +454,7 @@ const fmtLBP = (n) => Math.round(n).toLocaleString("en-US");
 const fmtUSD = (n, rate) => (n / rate).toFixed(2);
 
 // per-item currency rule: below 5,000 => US dollars, otherwise lira
-const USD_MAX = 5000;
+const USD_MAX = 1000;
 const itemIsUSD = (price) => price > 0 && price < USD_MAX;
 const itemToLL = (price, rate) => (itemIsUSD(price) ? price * rate : price); // value in LL
 

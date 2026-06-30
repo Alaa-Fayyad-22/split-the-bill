@@ -438,9 +438,8 @@ import { Plus, Trash2, Users, Receipt, ArrowRight, Scissors, Camera } from "luci
   currency (LL) for the math, and shown in both LL and $.
 
   Per-item currency: an item priced BELOW 5,000 is read as US dollars,
-  5,000 or above is read as Lebanese lira. (At today's rate no real lira
-  item is under 5,000, so the size of the number is a reliable signal.)
-  Each item is judged on its own, so a receipt can mix $ and LL items.
+  5,000 or above is read as Lebanese lira. Each item is judged on its own,
+  so a receipt can mix $ and LL items.
 
   Tip is split EQUALLY among everyone in the list.
 */
@@ -555,15 +554,25 @@ export default function SplitTheBill() {
     }));
   const addItem = () => setItems([...items, { id: "i" + Date.now(), name: "", price: 0, qty: 1, sharers: [] }]);
   const removeItem = (id) => setItems(items.filter((it) => it.id !== id));
+
+  // Split a quantity-N line into N equal units.
+  // Work in the item's smallest unit so the parts always sum back to the
+  // original: CENTS for dollar items (2 decimals), whole POUNDS for lira.
   const splitItem = (id) =>
     setItems(items.flatMap((it) => {
       if (it.id !== id || it.qty <= 1) return [it];
       const n = it.qty;
-      const base = Math.floor(it.price / n);
-      const remainder = it.price - base * n;
+      const decimals = itemIsUSD(it.price) ? 2 : 0;
+      const factor = Math.pow(10, decimals);
+      const totalUnits = Math.round(it.price * factor);
+      const base = Math.floor(totalUnits / n);
+      const remainder = totalUnits - base * n;
       return Array.from({ length: n }, (_, k) => ({
-        id: it.id + "-u" + k, name: it.name + " #" + (k + 1),
-        price: base + (k < remainder ? 1 : 0), qty: 1, sharers: [],
+        id: it.id + "-u" + k,
+        name: it.name + " #" + (k + 1),
+        price: (base + (k < remainder ? 1 : 0)) / factor,
+        qty: 1,
+        sharers: [],
       }));
     }));
 
